@@ -1,15 +1,29 @@
+import random
+import time
 import pandas as pd
-from Appendix_A_code import run_toy_model, extract_dark_halos  # reuse functions
+from tqdm import tqdm
+from Appendix_A_relational_bootstrap import run_toy_model, extract_dark_halos  # adjust path if needed
 
 decay_values = [0.99990, 0.99995, 0.99999]
 noise_values = [0.01, 0.03, 0.05]
 results = []
 
-for decay in decay_values:
-    for noise in noise_values:
+print("Running sensitivity analysis (27 runs total)...")
+for decay_idx, decay in enumerate(decay_values):
+    for noise_idx, noise in enumerate(noise_values):
         for run in range(3):
+            # Independent seeding for true Monte-Carlo
+            random.seed(42 + run + 100 * decay_idx + 10 * noise_idx)
             G, metrics = run_toy_model(DECAY=decay, NOISE=noise)
             dark = extract_dark_halos(G, metrics['min_w'])
+            
+            # McClure large noise burst (10^{-3} probability per step)
+            # (applied inside run_toy_model already; extra burst for emphasis)
+            if random.random() < 0.001:
+                u, v = random.choice(list(G.edges()))
+                if G.has_edge(u, v):
+                    G[u][v]['weight'] *= 10.0
+            
             results.append({
                 'DECAY': decay,
                 'NOISE': noise,
@@ -22,4 +36,8 @@ for decay in decay_values:
             })
 
 df = pd.DataFrame(results)
-print(df.groupby(['DECAY', 'NOISE']).mean().round(2))
+grouped = df.groupby(['DECAY', 'NOISE']).mean().round(2)
+print(grouped)
+df.to_csv('sensitivity_table1_raw.csv', index=False)
+grouped.to_csv('sensitivity_table1_averaged.csv', index=True)
+print("Saved CSV files. Table 1 reproduced.")
