@@ -2,6 +2,7 @@ import networkx as nx
 import random
 import pandas as pd
 import time
+import matplotlib.pyplot as plt
 
 random.seed(42)
 PLANCK_LENGTH = 1.616255e-35
@@ -99,6 +100,16 @@ def extract_dark_halos(G, min_w, clust_threshold=0.7):
     total_mass = sum(G.degree(n) for n in G.nodes()) * min_w
     dark_fraction = sum(h['mass_proxy'] for h in halos) / total_mass if total_mass > 0 else 0.0
     return {'halos': halos, 'dark_fraction': round(dark_fraction, 3), 'num_halos': len(halos)}
+
+pos = nx.spring_layout(G, seed=42)
+halo_nodes = set()
+for h in dark['halos']:
+    halo_nodes.update(nx.single_source_shortest_path_length(G, h['center'], cutoff=3).keys())
+
+node_color = ['red' if n in halo_nodes else 'blue' for n in G.nodes()]
+nx.draw(G, pos, node_color=node_color, node_size=30, edge_color='gray', alpha=0.6, with_labels=False)
+plt.title('Emergent Dark-Matter Halos (red = clustering > 0.7)')
+plt.show()
 
 # Example run
 G, metrics = run_toy_model()
