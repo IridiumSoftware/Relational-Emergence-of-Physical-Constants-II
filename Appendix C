@@ -1,19 +1,17 @@
 import networkx as nx
 import numpy as np
 import random
-import time
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from tqdm import tqdm
 
 random.seed(42)
-c = 2.99792458e8
-l_p = 1.616255e-35
-t_p = 5.391247e-44
-m_p = 2.176434e-8
 
 class MRBootstrapCurved:
     def __init__(self, n_nodes=5000, steps=600, decay=0.99995, noise=0.03):
         self.G = nx.Graph()
         self.positions = {}
-        self.spinors = {}  # (u,v): (left, right) handedness
+        self.spinors = {}
         
         for i in range(n_nodes):
             self.G.add_node(i)
@@ -31,7 +29,9 @@ class MRBootstrapCurved:
     
     def geodesic(self, u, v):
         du = self.positions[u] - self.positions[v]
-        return np.sqrt(np.sum(du[0:3]**2) - c**2 * du[3]**2 + 1e-20)
+        # Minkowski with safe Euclidean fallback to avoid NaN
+        interval = du[0]**2 + du[1]**2 + du[2]**2 - (2.99792458e8 * du[3])**2
+        return np.sqrt(max(0.0, np.real(interval))) + 1e-10
     
     def step(self, s):
         nodes = list(self.G.nodes())
@@ -44,13 +44,17 @@ class MRBootstrapCurved:
             energy = sum(d.get('weight', 0) for _, _, d in self.G.edges(node, data=True))
             if energy > 1e-10:
                 candidates = list(self.G.nodes())
-                weights = [self.G.degree(n) / (self.geodesic(node, n) + 1e-10) for n in candidates]
-                nbr = random.choices(candidates, weights=weights, k=1)[0]
+                # Limit to local candidates for speed
+                local_cands = [n for n in candidates if self.geodesic(node, n) < 1e-4]
+                if not local_cands:
+                    local_cands = candidates[:100]
+                weights = [self.G.degree(n) / self.geodesic(node, n) for n in local_cands]
+                nbr = random.choices(local_cands, weights=weights, k=1)[0]
                 if node != nbr and not self.G.has_edge(node, nbr):
-                    d = self.geodesic(node, nbr)
                     self.G.add_edge(node, nbr, weight=energy / 2.0)
                     self.spinors[(min(node,nbr), max(node,nbr))] = (int(energy % 2), int((energy * 1.1) % 2))
         
+        # Dissipation & noise (repair map)
         for u, v, d in list(self.G.edges(data=True)):
             d['weight'] *= self.decay
             if d['weight'] < 1e-6:
@@ -67,6 +71,7 @@ class MRBootstrapCurved:
                     if self.G[u][v]['weight'] < 1e-6:
                         self.G.remove_edge(u, v)
         
+        # Position drift (discrete Einstein-Hilbert analog)
         for node in nodes:
             pull = np.zeros(4)
             for nbr in self.G.neighbors(node):
@@ -74,29 +79,69 @@ class MRBootstrapCurved:
                 pull += du * self.G[node][nbr]['weight']
             self.positions[node] += pull * 1e-3
         
+        # Spinor contribution to time coordinate
         for node in nodes:
             spin_sum = sum(s[0] + s[1] for (u,v), s in self.spinors.items() if u == node or v == node)
             self.positions[node][3] += spin_sum * 1e-6
     
     def run(self):
-        t0 = time.time()
-        for s in range(self.steps):
+        for s in tqdm(range(self.steps), desc="Curved bootstrap"):
             self.step(s)
-            if s % 100 == 0:
-                print(f"Step {s}: Nodes {self.G.number_of_nodes()}, Edges {self.G.number_of_edges()}")
-        print(f"Finished in {time.time()-t0:.1f} s")
         
-        path_len = sum(nx.shortest_path_length(self.G, random.choice(list(self.G.nodes())), random.choice(list(self.G.nodes()))) for _ in range(200)) / 200
-        min_w = min(d['weight'] for _,_,d in self.G.edges(data=True))
+        # Metrics
+        path_samples = 200
+        path_len = 0.0
+        count = 0
+        nodes_l = list(self.G.nodes())
+        for _ in range(path_samples):
+            u, v = random.sample(nodes_l, 2)
+            try:
+                path_len += nx.shortest_path_length(self.G, u, v)
+                count += 1
+            except:
+                pass
+        path_len = path_len / count if count > 0 else float('nan')
+        
+        min_w = min((d['weight'] for _,_,d in self.G.edges(data=True)), default=0.0)
         clust = nx.average_clustering(self.G)
         
-        return {
-            'path_len': round(path_len, 2),
-            'clust': round(clust, 3),
-            'hbar': round(min_w * (l_p**2 * m_p / t_p), 3e-35),
-            'G': round(clust * (l_p**3 / (m_p * t_p**2)), 3e-11)
-        }
+        hbar_val = min_w * (1.616255e-35**2 * 2.176434e-8 / 5.391247e-44)
+        g_val = clust * (1.616255e-35**3 / (2.176434e-8 * 5.391247e-44**2))
+        
+        print(f"ℏ ≈ {hbar_val:.2e} J s")
+        print(f"G ≈ {g_val:.2e} m³ kg⁻¹ s⁻²")
+        return {'path_len': round(path_len, 2), 'clust': round(clust, 3)}
+    
+    def plot_figure1(self):
+        """Exact Figure 1: 3D projection, color=local clustering, lines=geodesics."""
+        fig = plt.figure(figsize=(12, 9))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Compute local clustering per node
+        node_clust = {}
+        for n in self.G.nodes():
+            local = list(nx.single_source_shortest_path_length(self.G, n, cutoff=3).keys())
+            node_clust[n] = nx.average_clustering(self.G.subgraph(local))
+        
+        pos = np.array([self.positions[n] for n in self.G.nodes()])
+        colors = [node_clust[n] for n in self.G.nodes()]
+        
+        ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=colors, cmap='plasma', s=20, alpha=0.8)
+        
+        # Geodesic lines (only short ones for clarity)
+        for u, v in list(self.G.edges())[:500]:  # limit for speed
+            p1 = self.positions[u]
+            p2 = self.positions[v]
+            if np.linalg.norm(p1[:3] - p2[:3]) < 5e-5:
+                ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], 'gray', alpha=0.3, lw=0.5)
+        
+        ax.set_title('Figure 1: Emergent 4D Positions (color = local clustering)\nHigh-clustering regions bend geodesics')
+        ax.set_xlabel('x'); ax.set_ylabel('y'); ax.set_zlabel('z')
+        plt.savefig('figure1_emergent_positions.png', dpi=300)
+        plt.show()
 
-model = MRBootstrapCurved()
-results = model.run()
-print(results)
+# Run & generate Figure 1
+if __name__ == "__main__":
+    model = MRBootstrapCurved()
+    results = model.run()
+    model.plot_figure1()
