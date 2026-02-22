@@ -1,0 +1,69 @@
+import networkx as nx
+import random
+import pandas as pd
+
+random.seed(42)
+PLANCK_LENGTH = 1.616255e-35
+PLANCK_TIME   = 5.391247e-44
+PLANCK_MASS   = 2.176434e-8
+PREF_HBAR = PLANCK_LENGTH**2 * PLANCK_MASS / PLANCK_TIME
+PREF_G    = PLANCK_LENGTH**3 / (PLANCK_MASS * PLANCK_TIME**2)
+
+def run_variant(mode, N=10000, STEPS=600, THRESH=1e-10, DECAY=0.99995, NOISE=0.03):
+    G = nx.Graph()
+    G.add_nodes_from(range(N))
+    for _ in range(4*N):
+        u, v = random.sample(range(N), 2)
+        if u != v and not G.has_edge(u, v):
+            G.add_edge(u, v, weight=random.uniform(0.1,1.0))
+    
+    for s in range(STEPS):
+        nodes = list(G.nodes())
+        energies = [sum(d.get('weight',0) for _,_,d in G.edges(n, data=True)) for n in nodes]
+        total_e = sum(energies) or 1.0
+        probs = [e/total_e for e in energies]
+        active = random.choices(nodes, weights=probs, k=max(1, int(0.12*N)))
+        
+        for node in set(active):
+            energy = sum(d.get('weight',0) for _,_,d in G.edges(node, data=True))
+            if energy > THRESH:
+                candidates = list(G.nodes())
+                if mode in ['base', 'repair']:
+                    weights = [G.degree(n)+1 for n in candidates]
+                else:
+                    weights = [1 for _ in candidates]
+                nbr = random.choices(candidates, weights=weights, k=1)[0]
+                if node != nbr and not G.has_edge(node, nbr):
+                    G.add_edge(node, nbr, weight=energy/2)
+        
+        for u,v,d in list(G.edges(data=True)):
+            d['weight'] *= DECAY
+            if d['weight'] < 1e-6: G.remove_edge(u,v)
+        
+        edges_list = list(G.edges())
+        perturb_n = max(1, int(NOISE * len(edges_list)))
+        for _ in range(perturb_n):
+            if edges_list:
+                u,v = random.choice(edges_list)
+                if G.has_edge(u,v):
+                    G[u][v]['weight'] *= random.uniform(0.94,1.06)
+                    if G[u][v]['weight'] < 1e-6:
+                        G.remove_edge(u,v)
+    
+    path = sum(nx.shortest_path_length(G, random.choice(list(G.nodes())), random.choice(list(G.nodes()))) for _ in range(200))/200
+    min_w = min((d['weight'] for _,_,d in G.edges(data=True)), default=0)
+    clust = nx.average_clustering(G)
+    
+    return {
+        'variant': mode,
+        'path': round(path,2),
+        'clust': round(clust,2),
+        'min_w': round(min_w,2),
+        'hbar': round(min_w * PREF_HBAR * 1e35, 2),
+        'G': round(clust * PREF_G * 1e11, 2)
+    }
+
+variants = ['base', 'event', 'repair', 'chiral']
+results = [run_variant(v, mode=v) for v in variants]
+df = pd.DataFrame(results)
+print(df.to_string(index=False))
