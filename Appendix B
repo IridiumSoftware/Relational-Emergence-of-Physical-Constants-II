@@ -1,0 +1,25 @@
+import pandas as pd
+from Appendix_A_code import run_toy_model, extract_dark_halos  # reuse functions
+
+decay_values = [0.99990, 0.99995, 0.99999]
+noise_values = [0.01, 0.03, 0.05]
+results = []
+
+for decay in decay_values:
+    for noise in noise_values:
+        for run in range(3):
+            G, metrics = run_toy_model(DECAY=decay, NOISE=noise)
+            dark = extract_dark_halos(G, metrics['min_w'])
+            results.append({
+                'DECAY': decay,
+                'NOISE': noise,
+                'Avg Path': metrics['path_len'],
+                'Clustering': metrics['clust'],
+                'Min Weight': metrics['min_w'],
+                'Emergent ℏ (×10^{-35})': round(metrics['hbar'] * 1e35, 2),
+                'Emergent G (×10^{-11})': round(metrics['G'] * 1e11, 2),
+                'Dark Fraction': dark['dark_fraction']
+            })
+
+df = pd.DataFrame(results)
+print(df.groupby(['DECAY', 'NOISE']).mean().round(2))
